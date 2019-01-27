@@ -18,7 +18,6 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/smallstep/cli/crypto/keys"
 	"github.com/smallstep/cli/crypto/pemutil"
-	stepx509 "github.com/smallstep/cli/pkg/x509"
 
 	"google.golang.org/grpc"
 
@@ -119,9 +118,7 @@ func main() {
 		}
 		log.Debugf("cert=%v", p)
 
-		crt := p.(*stepx509.Certificate)
-
-		if _, err = pemutil.Serialize(crt, pemutil.ToFile(*crtPath, 0600)); err != nil {
+		if err := ioutil.WriteFile(*crtPath, crtb, 0600); err != nil {
 			log.Fatal(err.Error())
 		}
 

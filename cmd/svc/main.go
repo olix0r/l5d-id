@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	log "github.com/sirupsen/logrus"
@@ -133,6 +134,18 @@ func (s *idSvc) Certify(ctx context.Context, req *pb.CertifyRequest) (*pb.Certif
 	log.Debugf("uid=%s; uname=%s", rvw.Status.User.UID, rvw.Status.User.Username)
 	if rvw.Status.User.UID == "" || rvw.Status.User.Username == "" {
 		return nil, status.Error(codes.Internal, "TokenReview provided invaliduser")
+	}
+
+	// Validate that the Certificate maps to the proper uid/...
+	nameparts := strings.Split(rvw.Status.User.Username, ":")
+	if len(nameparts) != 4 || nameparts[0] != "system" || nameparts[1] != "serviceaccount" {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("Unexpected username: %s", rvw.Status.User.Username))
+	}
+
+	expectedName := fmt.Sprintf("%s.%s.%s", rvw.Status.User.UID, nameparts[3], nameparts[2])
+	if csr.Subject.CommonName != expectedName {
+		msg := fmt.Sprintf("Identity could not be validated for %s", csr.Subject.CommonName)
+		return nil, status.Error(codes.FailedPrecondition, msg)
 	}
 
 	profile, err := x509util.NewLeafProfileWithCSR(csr, s.issuer.Crt, s.issuer.Key)
