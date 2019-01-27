@@ -1,0 +1,29 @@
+#!/bin/bash
+
+set -eu
+
+if [ "$(uname -s)" = "Darwin" ]; then
+  os=osx
+else
+  os=linux
+fi
+arch=$(uname -m)
+
+protocversion=3.6.0
+protocbin=target/protoc-${protocversion}
+protocurl="https://github.com/google/protobuf/releases/download/v${protocversion}/protoc-${protocversion}-${os}-${arch}.zip"
+
+if [ ! -f "$protocbin" ]; then
+  tmp=$(mktemp -d -t protoc.XXX)
+  mkdir -p target
+  (
+    cd "$tmp"
+    curl -L --silent --fail -o "./protoc.zip" "$protocurl"
+    unzip -q "./protoc.zip" bin/protoc
+    chmod +x bin/protoc
+  )
+  mv "$tmp/bin/protoc" "$protocbin"
+  rm -rf "$tmp"
+fi
+
+./$protocbin "$@"

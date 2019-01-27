@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package io.linkerd.identity;
+
+option go_package = "github.com/olix0r/l5d-id/gen/identity";
+
+service Identity {
+  rpc Certify(CertifyRequest) returns (CertifyResponse) {}
+}
+
+message CertifyRequest {
+  bytes token = 1;
+  bytes certificate_signing_request = 2;
+}
+
+message CertifyResponse {
+  bytes certificate = 1;
+}
