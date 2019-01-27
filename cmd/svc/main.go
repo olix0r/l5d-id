@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/smallstep/cli/crypto/x509util"
@@ -31,7 +32,7 @@ import (
 func main() {
 	addr := flag.String("addr", ":8083", "address to serve on")
 	kubeConfigPath := flag.String("kubeconfig", "", "path to kube config")
-	// keyDuration := flag.Duration("identityLifetime", 24*time.Hour, "path to signing key")
+	lifetime := flag.Duration("lifetime", 2*time.Hour, "certificate lifetime")
 	signingKey := flag.String("signing-key", "", "path to signing key")
 	signingCrt := flag.String("signing-crt", "", "path to signing certificate")
 
@@ -67,7 +68,7 @@ func main() {
 	}
 
 	srv := grpc.NewServer()
-	pb.RegisterIdentityServer(srv, &idSvc{authn, issuer})
+	pb.RegisterIdentityServer(srv, &idSvc{authn, issuer, *lifetime})
 
 	go func() {
 		log.Infof("starting gRPC server on %s", *addr)
@@ -96,8 +97,9 @@ func newAuthn(configFile string) (*kauthn.AuthenticationV1Client, error) {
 }
 
 type idSvc struct {
-	authn  *kauthn.AuthenticationV1Client
-	issuer *x509util.Identity
+	authn    *kauthn.AuthenticationV1Client
+	issuer   *x509util.Identity
+	lifetime time.Duration
 }
 
 func (s *idSvc) Certify(ctx context.Context, req *pb.CertifyRequest) (*pb.CertifyResponse, error) {
@@ -116,10 +118,10 @@ func (s *idSvc) Certify(ctx context.Context, req *pb.CertifyRequest) (*pb.Certif
 	}
 
 	tr := kauthnApi.TokenReview{Spec: kauthnApi.TokenReviewSpec{Token: string(tok)}}
-	log.Debugf("requesting token review: %v", tr)
+	log.Debugf("requesting token review to certify %s", csr.Subject.CommonName)
+
 	// XXX what to do about the context?
 	rvw, err := s.authn.TokenReviews().Create(&tr)
-	log.Debugf("token review: %v", rvw)
 
 	if err != nil {
 		return nil, status.Error(codes.Internal, "TokenReview failed")
@@ -136,19 +138,56 @@ func (s *idSvc) Certify(ctx context.Context, req *pb.CertifyRequest) (*pb.Certif
 		return nil, status.Error(codes.Internal, "TokenReview provided invaliduser")
 	}
 
-	// Validate that the Certificate maps to the proper uid/...
+	// Validate that the Certificate's metadata to the proper uid/...
 	nameparts := strings.Split(rvw.Status.User.Username, ":")
 	if len(nameparts) != 4 || nameparts[0] != "system" || nameparts[1] != "serviceaccount" {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("Unexpected username: %s", rvw.Status.User.Username))
+		msg := fmt.Sprintf("Unexpected username: %s", rvw.Status.User.Username)
+		return nil, status.Error(codes.Internal, msg)
 	}
 
-	expectedName := fmt.Sprintf("%s.%s.%s", rvw.Status.User.UID, nameparts[3], nameparts[2])
-	if csr.Subject.CommonName != expectedName {
-		msg := fmt.Sprintf("Identity could not be validated for %s", csr.Subject.CommonName)
+	ns := nameparts[2]
+	if ns == "" || strings.Contains(ns, ".") {
+		msg := fmt.Sprintf("Unexpected namespace: %s", ns)
+		return nil, status.Error(codes.Internal, msg)
+	}
+
+	sa := nameparts[3]
+	if sa == "" || strings.Contains(sa, ".") {
+		msg := fmt.Sprintf("Unexpected service account: %s", sa)
+		return nil, status.Error(codes.Internal, msg)
+	}
+
+	nameWithoutUID := fmt.Sprintf("%s.%s", sa, ns)
+	nameWithUID := fmt.Sprintf("%s.%s", rvw.Status.User.UID, nameWithoutUID)
+
+	if csr.Subject.CommonName != nameWithUID {
+		msg := fmt.Sprintf("Identity could not be validated for %s: %s", csr.Subject.CommonName, nameWithUID)
 		return nil, status.Error(codes.FailedPrecondition, msg)
 	}
 
-	profile, err := x509util.NewLeafProfileWithCSR(csr, s.issuer.Crt, s.issuer.Key)
+	for _, n := range csr.DNSNames {
+		if n != nameWithUID && n != nameWithoutUID {
+			msg := fmt.Sprintf("Cannot validate name: %s", n)
+			return nil, status.Error(codes.FailedPrecondition, msg)
+		}
+	}
+
+	if len(csr.EmailAddresses) > 0 {
+		return nil, status.Error(codes.FailedPrecondition, "Cannot validate email addresses")
+	}
+
+	// TODO should we support POD IPs?
+	if len(csr.IPAddresses) > 0 {
+		return nil, status.Error(codes.FailedPrecondition, "Cannot validate IP addresses")
+	}
+
+	// TODO permit spiffe ids?
+	if len(csr.URIs) > 0 {
+		return nil, status.Error(codes.FailedPrecondition, "Cannot validate URIs")
+	}
+
+	notAfterLifetime := x509util.WithNotBeforeAfterDuration(time.Time{}, time.Time{}, s.lifetime)
+	profile, err := x509util.NewLeafProfileWithCSR(csr, s.issuer.Crt, s.issuer.Key, notAfterLifetime)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -157,13 +196,10 @@ func (s *idSvc) Certify(ctx context.Context, req *pb.CertifyRequest) (*pb.Certif
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	p := &pem.Block{
+
+	c := pem.EncodeToMemory(&pem.Block{
 		Type:  "CERTIFICATE",
 		Bytes: crtb,
-	}
-
-	rsp := &pb.CertifyResponse{
-		Certificate: pem.EncodeToMemory(p),
-	}
-	return rsp, nil
+	})
+	return &pb.CertifyResponse{Certificate: c}, nil
 }

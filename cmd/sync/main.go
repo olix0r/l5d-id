@@ -4,20 +4,23 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
-	"crypto/x509"
+	"crypto/sha256"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/smallstep/cli/crypto/keys"
 	"github.com/smallstep/cli/crypto/pemutil"
+	"github.com/smallstep/cli/pkg/x509"
 
 	"google.golang.org/grpc"
 
@@ -29,7 +32,9 @@ import (
 
 func main() {
 	addr := flag.String("addr", "l5d-id:8083", "address to serve on")
-	identity := flag.String("identity", "", "identity string")
+	uid := flag.String("uid", "", "service account uid")
+	sa := flag.String("sa", "", "service account name")
+	ns := flag.String("ns", "", "service account namespace")
 	tokenPath := flag.String("token-path", "", "path to token")
 	keyPath := flag.String("key-path", "", "path that the key is written to")
 	crtPath := flag.String("crt-path", "", "path that the crt is written to")
@@ -62,8 +67,16 @@ func main() {
 		log.Fatal("`-token-path` must be specified")
 	}
 
-	if *identity == "" {
-		log.Fatal("`-identity` must be specified")
+	if *uid == "" {
+		log.Fatal("`-uid` must be specified")
+	}
+
+	if *sa == "" {
+		log.Fatal("`-sa` must be specified")
+	}
+
+	if *ns == "" {
+		log.Fatal("`-ns` must be specified")
 	}
 
 	if *keyPath == "" {
@@ -86,7 +99,14 @@ func main() {
 		log.Fatal(err.Error())
 	}
 
-	csrReq := &x509.CertificateRequest{Subject: pkix.Name{CommonName: *identity}}
+	shortName := fmt.Sprintf("%s.%s", *sa, *ns)
+	longName := fmt.Sprintf("%s.%s", *uid, shortName)
+	// TODO spiffe ID
+
+	csrReq := &x509.CertificateRequest{
+		Subject:  pkix.Name{CommonName: longName},
+		DNSNames: []string{shortName, longName},
+	}
 	csr, err := newCSR(privkey, csrReq)
 	if err != nil {
 		log.Fatal(err.Error())
@@ -105,25 +125,36 @@ func main() {
 		if err != nil {
 			log.Fatal(fmt.Errorf("Failed to obtain certificate: %s", err.Error()))
 		}
-		log.Debugf("certify=%v", rsp)
 
 		crtb := rsp.GetCertificate()
 		if len(crtb) == 0 {
 			log.Fatal("Missing certificate in response")
 		}
 
+		// Assert that the certificate is valid.
 		p, err := pemutil.Parse(crtb, pemutil.WithStepCrypto())
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		log.Debugf("cert=%v", p)
+		crt := p.(*x509.Certificate)
 
 		if err := ioutil.WriteFile(*crtPath, crtb, 0600); err != nil {
 			log.Fatal(err.Error())
 		}
 
+		expiresIn := crt.NotAfter.Sub(time.Now())
+
+		// Refresh in 80% of the time expiry time, with a max of 1 day
+		refreshIn := (expiresIn / time.Second) * (800 * time.Millisecond)
+		if refreshIn > 24*time.Hour {
+			refreshIn = 24 * time.Hour
+		}
+
+		sum := sha256.Sum256(crt.Raw)
+
+		log.Infof("fp=%s; expiry=%s; refresh=%s", strings.ToLower(hex.EncodeToString(sum[:])), expiresIn, refreshIn)
 		select {
-		case <-time.NewTimer(time.Minute).C:
+		case <-time.NewTimer(refreshIn).C:
 			continue
 		case <-stop:
 			os.Exit(0)
