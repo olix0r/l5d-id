@@ -99,13 +99,9 @@ func main() {
 		log.Fatal(err.Error())
 	}
 
-	shortName := fmt.Sprintf("%s.%s", *sa, *ns)
-	longName := fmt.Sprintf("%s.%s", *uid, shortName)
-	// TODO spiffe ID
-
+	name := fmt.Sprintf("%s.%s.%s", *uid, *sa, *ns)
 	csrReq := &x509.CertificateRequest{
-		Subject:  pkix.Name{CommonName: longName},
-		DNSNames: []string{shortName, longName},
+		Subject: pkix.Name{CommonName: name},
 	}
 	csr, err := newCSR(privkey, csrReq)
 	if err != nil {

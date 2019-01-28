@@ -157,16 +157,15 @@ func (s *idSvc) Certify(ctx context.Context, req *pb.CertifyRequest) (*pb.Certif
 		return nil, status.Error(codes.Internal, msg)
 	}
 
-	nameWithoutUID := fmt.Sprintf("%s.%s", sa, ns)
-	nameWithUID := fmt.Sprintf("%s.%s", rvw.Status.User.UID, nameWithoutUID)
+	validName := fmt.Sprintf("%s.%s.%s", rvw.Status.User.UID, sa, ns)
 
-	if csr.Subject.CommonName != nameWithUID {
-		msg := fmt.Sprintf("Identity could not be validated for %s: %s", csr.Subject.CommonName, nameWithUID)
+	if csr.Subject.CommonName != validName {
+		msg := fmt.Sprintf("Identity could not be validated for %s: %s", csr.Subject.CommonName, validName)
 		return nil, status.Error(codes.FailedPrecondition, msg)
 	}
 
 	for _, n := range csr.DNSNames {
-		if n != nameWithUID && n != nameWithoutUID {
+		if n != validName {
 			msg := fmt.Sprintf("Cannot validate name: %s", n)
 			return nil, status.Error(codes.FailedPrecondition, msg)
 		}
@@ -192,6 +191,7 @@ func (s *idSvc) Certify(ctx context.Context, req *pb.CertifyRequest) (*pb.Certif
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
+	log.Infof("certifying %s for %s", csr.Subject.CommonName, s.lifetime)
 	crtb, err := profile.CreateCertificate()
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
