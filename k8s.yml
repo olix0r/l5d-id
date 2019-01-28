@@ -48,7 +48,7 @@ spec:
     spec:
       containers:
       - name: l5d-id-svc
-        image: olix0r/l5d-id:v1
+        image: olix0r/l5d-id:v2
         command:
           -  "/l5d-id-svc"
           - "-lifetime=1m"
@@ -80,17 +80,25 @@ spec:
         app: l5d-id
         l5d-role: client
     spec:
+      initContainers:
+      - name: l5d-id-sync-init
+        image: olix0r/l5d-id:v2
+        command:
+          - "/l5d-id-sync-init"
+          - "-token=/var/run/secrets/kubernetes.io/serviceaccount/token"
+          - "-key=/var/run/linkerd/identity/key"
+          - "-csr=/var/run/linkerd/identity/csr"
+        volumeMounts:
+        - mountPath: /var/run/linkerd/identity
+          name: l5d-id-scratch
       containers:
       - name: l5d-id-sync
-        image: olix0r/l5d-id:v1
+        image: olix0r/l5d-id:v2
         command:
           - "/l5d-id-sync"
-          - "-uid=933d27df-0319-11e9-b520-80fa5b5b38db"
-          - "-sa=default"
-          - "-ns=default"
-          - "-token-path=/var/run/secrets/kubernetes.io/serviceaccount/token"
-          - "-key-path=/var/run/linkerd/identity/key"
-          - "-crt-path=/var/run/linkerd/identity/crt"
+          - "-token=/var/run/secrets/kubernetes.io/serviceaccount/token"
+          - "-csr=/var/run/linkerd/identity/csr"
+          - "-crt=/var/run/linkerd/identity/crt"
           - "-addr=l5d-id-svc:8083"
         volumeMounts:
         - mountPath: /var/run/linkerd/identity

@@ -2,12 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509/pkix"
 	"encoding/hex"
-	"encoding/pem"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -18,7 +14,6 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
-	"github.com/smallstep/cli/crypto/keys"
 	"github.com/smallstep/cli/crypto/pemutil"
 	"github.com/smallstep/cli/pkg/x509"
 
@@ -32,12 +27,9 @@ import (
 
 func main() {
 	addr := flag.String("addr", "l5d-id:8083", "address to serve on")
-	uid := flag.String("uid", "", "service account uid")
-	sa := flag.String("sa", "", "service account name")
-	ns := flag.String("ns", "", "service account namespace")
-	tokenPath := flag.String("token-path", "", "path to token")
-	keyPath := flag.String("key-path", "", "path that the key is written to")
-	crtPath := flag.String("crt-path", "", "path that the crt is written to")
+	tokenPath := flag.String("token", "", "path to token")
+	csrPath := flag.String("csr", "", "path to read CSR from")
+	crtPath := flag.String("crt", "", "path that certificate is written to (for debugging)")
 
 	// override glog's default configuration
 	flag.Set("logtostderr", "true")
@@ -64,46 +56,18 @@ func main() {
 	client := pb.NewIdentityClient(conn)
 
 	if *tokenPath == "" {
-		log.Fatal("`-token-path` must be specified")
+		log.Fatal("`-token` must be specified")
 	}
 
-	if *uid == "" {
-		log.Fatal("`-uid` must be specified")
-	}
-
-	if *sa == "" {
-		log.Fatal("`-sa` must be specified")
-	}
-
-	if *ns == "" {
-		log.Fatal("`-ns` must be specified")
-	}
-
-	if *keyPath == "" {
-		log.Fatal("`-key-path` must be specified")
+	if *csrPath == "" {
+		log.Fatal("`-csr` must be specified")
 	}
 
 	if *crtPath == "" {
-		log.Fatal("`-crt-path` must be specified")
+		log.Fatal("`-crt` must be specified")
 	}
 
-	privkey, err := newKey()
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-	priv, err := pemutil.Serialize(privkey)
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-	if err := ioutil.WriteFile(*keyPath, pem.EncodeToMemory(priv), 0600); err != nil {
-		log.Fatal(err.Error())
-	}
-
-	name := fmt.Sprintf("%s.%s.%s", *uid, *sa, *ns)
-	csrReq := &x509.CertificateRequest{
-		Subject: pkix.Name{CommonName: name},
-	}
-	csr, err := newCSR(privkey, csrReq)
+	csr, err := ioutil.ReadFile(*csrPath)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
@@ -156,30 +120,4 @@ func main() {
 			os.Exit(0)
 		}
 	}
-}
-
-func newKey() (*ecdsa.PrivateKey, error) {
-	k, err := keys.GenerateKey("EC", "P-256", 0)
-	if err != nil {
-		return nil, err
-	}
-	switch key := k.(type) {
-	case *ecdsa.PrivateKey:
-		return key, nil
-	default:
-		return nil, fmt.Errorf("Unexpected key type")
-	}
-}
-
-func newCSR(key *ecdsa.PrivateKey, req *x509.CertificateRequest) ([]byte, error) {
-	csrb, err := x509.CreateCertificateRequest(rand.Reader, req, key)
-	if err != nil {
-		return nil, err
-	}
-	p := &pem.Block{
-		Type:    "CERTIFICATE REQUEST",
-		Bytes:   csrb,
-		Headers: map[string]string{},
-	}
-	return pem.EncodeToMemory(p), nil
 }

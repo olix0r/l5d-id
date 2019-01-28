@@ -7,4 +7,5 @@ RUN CGO_ENABLED=0 GOOS=linux go install ./cmd/...
 
 FROM debian:jessie-slim
 COPY --from=build /go/bin/svc /l5d-id-svc
+COPY --from=build /go/bin/sync-init /l5d-id-sync-init
 COPY --from=build /go/bin/sync /l5d-id-sync

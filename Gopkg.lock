@@ -302,7 +302,7 @@
   version = "v1.3.0"
 
 [[projects]]
-  digest = "1:b08f4c1c664220c85c35e1640d35594925d80633a615ce30f9b9de752fada009"
+  digest = "1:bd612823953c7810a8f70c833e56044c6467117d43eb467b2a05a3e866c64405"
   name = "github.com/smallstep/cli"
   packages = [
     "command",
@@ -312,6 +312,7 @@
     "crypto/randutil",
     "crypto/x509util",
     "errs",
+    "jose",
     "pkg/blackfriday",
     "pkg/x509",
     "ui",
@@ -544,6 +545,19 @@
   version = "v0.9.1"
 
 [[projects]]
+  digest = "1:a4cde1eec9a17eb2399a50c6e1a9fe3fde039994de058f9dbf6592d157bfe97b"
+  name = "gopkg.in/square/go-jose.v2"
+  packages = [
+    ".",
+    "cipher",
+    "json",
+    "jwt",
+  ]
+  pruneopts = "UT"
+  revision = "e94fb177d3668d35ab39c61cbb2f311550557e83"
+  version = "v2.2.2"
+
+[[projects]]
   digest = "1:4d2e5a73dc1500038e504a8d78b986630e3626dc027bc030ba5c75da257cdb96"
   name = "gopkg.in/yaml.v2"
   packages = ["."]
@@ -678,6 +692,7 @@
     "github.com/smallstep/cli/crypto/keys",
     "github.com/smallstep/cli/crypto/pemutil",
     "github.com/smallstep/cli/crypto/x509util",
+    "github.com/smallstep/cli/jose",
     "github.com/smallstep/cli/pkg/x509",
     "golang.org/x/lint/golint",
     "golang.org/x/net/context",
