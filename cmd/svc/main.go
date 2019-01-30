@@ -13,6 +13,7 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/smallstep/cli/crypto/pemutil"
 	"github.com/smallstep/cli/crypto/x509util"
 
 	"google.golang.org/grpc"
@@ -57,18 +58,19 @@ func main() {
 		log.Fatal(err.Error())
 	}
 
+	issuer, err := x509util.LoadIdentityFromDisk(*signingCrt, *signingKey)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	svc := idSvc{authn, issuer, *lifetime}
+
 	lis, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
 
-	issuer, err := x509util.LoadIdentityFromDisk(*signingCrt, *signingKey)
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-
 	srv := grpc.NewServer()
-	pb.RegisterIdentityServer(srv, &idSvc{authn, issuer, *lifetime})
+	pb.RegisterIdentityServer(srv, &svc)
 
 	go func() {
 		log.Infof("starting gRPC server on %s", *addr)
@@ -117,48 +119,43 @@ func (s *idSvc) Certify(ctx context.Context, req *pb.CertifyRequest) (*pb.Certif
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	tr := kauthnApi.TokenReview{Spec: kauthnApi.TokenReviewSpec{Token: string(tok)}}
 	log.Debugf("requesting token review to certify %s", csr.Subject.CommonName)
-
-	// XXX what to do about the context?
+	tr := kauthnApi.TokenReview{Spec: kauthnApi.TokenReviewSpec{Token: string(tok)}}
 	rvw, err := s.authn.TokenReviews().Create(&tr)
-
 	if err != nil {
 		return nil, status.Error(codes.Internal, "TokenReview failed")
 	}
+
 	if rvw.Status.Error != "" {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("TokenReview failed: %s", rvw.Status.Error))
 	}
 	if !rvw.Status.Authenticated {
-		return nil, status.Error(codes.FailedPrecondition, "token was not authenticated")
+		return nil, status.Error(codes.FailedPrecondition, "token could not be authenticated")
 	}
 
-	log.Debugf("uid=%s; uname=%s", rvw.Status.User.UID, rvw.Status.User.Username)
-	if rvw.Status.User.UID == "" || rvw.Status.User.Username == "" {
-		return nil, status.Error(codes.Internal, "TokenReview provided invaliduser")
+	uid := rvw.Status.User.UID
+	uname := rvw.Status.User.Username
+	if uid == "" || uname == "" {
+		msg := fmt.Sprintf("TokenReview returned unexpected user: uid=%s; name=%s",
+			uid, uname)
+		return nil, status.Error(codes.Internal, msg)
 	}
 
 	// Validate that the Certificate's metadata to the proper uid/...
-	nameparts := strings.Split(rvw.Status.User.Username, ":")
-	if len(nameparts) != 4 || nameparts[0] != "system" || nameparts[1] != "serviceaccount" {
-		msg := fmt.Sprintf("Unexpected username: %s", rvw.Status.User.Username)
+	if strings.Contains(uname, ".") {
+		msg := fmt.Sprintf("Username may not contain dots: %s", uname)
 		return nil, status.Error(codes.Internal, msg)
 	}
-
-	ns := nameparts[2]
-	if ns == "" || strings.Contains(ns, ".") {
-		msg := fmt.Sprintf("Unexpected namespace: %s", ns)
+	uns := strings.Split(uname, ":")
+	if len(uns) != 4 ||
+		uns[0] != "system" || uns[1] != "serviceaccount" ||
+		uns[2] == "" || uns[3] == "" {
+		msg := fmt.Sprintf("Unexpected username; must be in form `system:serviceaccount:$ns:$name`: %s", uname)
 		return nil, status.Error(codes.Internal, msg)
 	}
+	ns, sa := uns[2], uns[3]
 
-	sa := nameparts[3]
-	if sa == "" || strings.Contains(sa, ".") {
-		msg := fmt.Sprintf("Unexpected service account: %s", sa)
-		return nil, status.Error(codes.Internal, msg)
-	}
-
-	validName := fmt.Sprintf("%s.%s.%s", rvw.Status.User.UID, sa, ns)
-
+	validName := fmt.Sprintf("%s.%s.%s", uid, sa, ns)
 	if csr.Subject.CommonName != validName {
 		msg := fmt.Sprintf("Identity could not be validated for %s: %s", csr.Subject.CommonName, validName)
 		return nil, status.Error(codes.FailedPrecondition, msg)
@@ -201,5 +198,9 @@ func (s *idSvc) Certify(ctx context.Context, req *pb.CertifyRequest) (*pb.Certif
 		Type:  "CERTIFICATE",
 		Bytes: crtb,
 	})
+	// Bundle issuer crt with certificate so the trust path to the root can be verified.
+	if ca, err := pemutil.Serialize(s.issuer.Crt); err == nil {
+		c = append(c, pem.EncodeToMemory(ca)...)
+	}
 	return &pb.CertifyResponse{Certificate: c}, nil
 }

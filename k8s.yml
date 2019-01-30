@@ -1,30 +1,98 @@
+# Note, this should be consumed via `make k8s`, which provides necessary crypto
+# resources.
+
+# This deployment simulates a meshed application
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: sync
+  labels:
+    demo: l5d-id
+    l5d-role: app
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        demo: l5d-id
+        l5d-role: app
+    spec:
+      initContainers:
+      - name: l5d-id-sync-init
+        image: olix0r/l5d-id:v3
+        command:
+          - "/l5d-id-sync-init"
+          - "-token=/var/run/secrets/kubernetes.io/serviceaccount/token"
+          - "-key=/var/run/linkerd/identity/key"
+          - "-csr=/var/run/linkerd/identity/csr"
+        volumeMounts:
+        - mountPath: /var/run/linkerd/identity
+          name: l5d-id-service-key
+        - mountPath: /var/run/linkerd/trust
+          name: l5d-id-trust
+
+      containers:
+      - name: l5d-id-sync
+        image: olix0r/l5d-id:v3
+        command:
+          - "/l5d-id-sync"
+          - "-token=/var/run/linkerd/serviceaccount/token"
+          - "-csr=/var/run/linkerd/identity/csr"
+          - "-crt=/var/run/linkerd/identity/crt"
+          - "-trust=/var/run/linkerd/trust/trust.crt"
+          - "-addr=api.l5d-id-svc:8083"
+        volumeMounts:
+        - mountPath: /var/run/linkerd/identity
+          name: l5d-id-service-key
+        - mountPath: /var/run/linkerd/trust
+          name: l5d-id-trust
+        - name: l5d-id-service-account
+          mountPath: "/var/run/linkerd/serviceaccount"
+          readOnly: true
+
+      volumes:
+      - name: l5d-id-service-account
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: l5d-id
+              expirationSeconds: 3600
+              path: token
+
+      - name: l5d-id-service-key
+        emptyDir:
+          medium: Memory
+
+      # Must be provided by `make target/example.com/l5d-id-trust.yml`
+      - name: l5d-id-trust
+        secret:
+          secretName: l5d-id-trust
+
+
 ---
 apiVersion: v1
-kind: Secret
+kind: Namespace
 metadata:
-  name: l5d-id-ca
+  name: l5d-id
   labels:
-    app: l5d-id
-    l5d-role: server
-type: Opaque
-data:
-  key: LS0tLS1CRUdJTiBFQyBQUklWQVRFIEtFWS0tLS0tCk1IY0NBUUVFSUQyRjh6d0svdHd4eUs2NFFTcFJPNytFcTRjRU4xWlRlSG14Qmt6U0NTT29vQW9HQ0NxR1NNNDkKQXdFSG9VUURRZ0FFMURQbHJRclVLTzZmby8rUG16bFNVYmFSbS9LaXNTaWxtdjF3d1ZWSE9YSFRGcHVYdldzdgplUGZhbXkvODhHNUJFWGlIQTluMzJoMHlDVlJ5YVBxSGhRPT0KLS0tLS1FTkQgRUMgUFJJVkFURSBLRVktLS0tLQo=
-  crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJzekNDQVZtZ0F3SUJBZ0lSQUk2V2lZZUJWUXNlWnViVFo4d2RGN1l3Q2dZSUtvWkl6ajBFQXdJd0dURVgKTUJVR0ExVUVBeE1PWTJFdVpYaGhiWEJzWlM1amIyMHdIaGNOTVRrd01USTJNRFl3TWpJMFdoY05Namt3TVRJegpNRFl3TWpJMFdqQTFNVE13TVFZRFZRUURFeXBzYVc1clpYSmtMV2xrWlc1MGFYUjVMbXhwYm10bGNtUXVjM1pqCkxtTnNkWE4wWlhJdWJHOWpZV3d3V1RBVEJnY3Foa2pPUFFJQkJnZ3Foa2pPUFFNQkJ3TkNBQVRVTStXdEN0UW8KN3Arai80K2JPVkpSdHBHYjhxS3hLS1dhL1hEQlZVYzVjZE1XbTVlOWF5OTQ5OXFiTC96d2JrRVJlSWNEMmZmYQpIVElKVkhKbytvZUZvMll3WkRBT0JnTlZIUThCQWY4RUJBTUNBUVl3RWdZRFZSMFRBUUgvQkFnd0JnRUIvd0lCCkFEQWRCZ05WSFE0RUZnUVVvTXlFZjJZZUxQVWVSVTFKbXAzT3Q0THJZZ013SHdZRFZSMGpCQmd3Rm9BVWVDOTEKWkxFUVVtbk9iWUJVVDllRmRiQ0d0NHd3Q2dZSUtvWkl6ajBFQXdJRFNBQXdSUUloQUpxTlFJVlZSRzNkMHEwOQoyY01Oc1M0ZmlJOC9zMWNsUitPR1JGWkl2eGo5QWlBcVE3Uk42R3dzRzN5NjVaTDNScDR4ZitJVjRCbkJJUU1KCkVHcGFOVzExM3c9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
+    demo: l5d-id
+    l5d-role: controller
 
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: l5d-id-svc
-  namespace: default
+  namespace: l5d-id
   labels:
-    app: l5d-id
-    l5d-role: server
+    demo: l5d-id
+    l5d-role: controller
 spec:
-  selector:
-    app: l5d-id
-    l5d-role: server
   type: LoadBalancer
+  selector:
+    demo: l5d-id
+    l5d-role: controller
   ports:
   - name: grpc
     port: 8083
@@ -34,85 +102,62 @@ apiVersion: extensions/v1beta1
 kind: Deployment
 metadata:
   name: l5d-id-svc
-  namespace: default
+  namespace: l5d-id
   labels:
-    app: l5d-id
-    l5d-role: server
+    demo: l5d-id
+    l5d-role: controller
 spec:
   replicas: 1
   template:
     metadata:
       labels:
-        app: l5d-id
-        l5d-role: server
+        demo: l5d-id
+        l5d-role: controller
     spec:
-      containers:
-      - name: l5d-id-svc
-        image: olix0r/l5d-id:v2
-        command:
-          -  "/l5d-id-svc"
-          - "-lifetime=1m"
-          - "-signing-key=/var/run/linkerd/ca/key"
-          - "-signing-crt=/var/run/linkerd/ca/crt"
-        volumeMounts:
-        - mountPath: /var/run/linkerd/ca
-          name: l5d-id-ca
-      volumes:
-      - name: l5d-id-ca
-        secret:
-          secretName: l5d-id-ca
----
 
-
----
-apiVersion: extensions/v1beta1
-kind: Deployment
-metadata:
-  name: l5d-id-sync
-  labels:
-    app: l5d-id
-    l5d-role: client
-spec:
-  replicas: 1
-  template:
-    metadata:
-      labels:
-        app: l5d-id
-        l5d-role: client
-    spec:
       initContainers:
       - name: l5d-id-sync-init
-        image: olix0r/l5d-id:v2
+        image: olix0r/l5d-id:v3
         command:
-          - "/l5d-id-sync-init"
-          - "-token=/var/run/secrets/kubernetes.io/serviceaccount/token"
-          - "-key=/var/run/linkerd/identity/key"
-          - "-csr=/var/run/linkerd/identity/csr"
+        - "/l5d-id-sync-init"
+        - "-token=/var/run/secrets/kubernetes.io/serviceaccount/token"
+        - "-key=/var/run/linkerd/identity/key"
+        - "-csr=/var/run/linkerd/identity/csr"
         volumeMounts:
         - mountPath: /var/run/linkerd/identity
-          name: l5d-id-scratch
+          name: l5d-id-service-key
+
       containers:
       - name: l5d-id-sync
-        image: olix0r/l5d-id:v2
+        image: olix0r/l5d-id:v3
         command:
-          - "/l5d-id-sync"
-          - "-token=/var/run/secrets/kubernetes.io/serviceaccount/token"
-          - "-csr=/var/run/linkerd/identity/csr"
-          - "-crt=/var/run/linkerd/identity/crt"
-          - "-addr=l5d-id-svc:8083"
+        - "/l5d-id-sync"
+        - "-token=/var/run/secrets/kubernetes.io/serviceaccount/token"
+        - "-csr=/var/run/linkerd/identity/csr"
+        - "-crt=/var/run/linkerd/identity/crt"
+        - "-addr=localhost:8083"
         volumeMounts:
         - mountPath: /var/run/linkerd/identity
-          name: l5d-id-scratch
-      #   - mountPath: /var/run/linkerd/serviceaccount
-      #     name: l5d-id-token
+          name: l5d-id-service-key
+
+      - name: l5d-id-svc
+        image: olix0r/l5d-id:v3
+        command:
+        - "/l5d-id-svc"
+        - "-lifetime=1m"
+        - "-signing-key=/var/run/linkerd/ca/key"
+        - "-signing-crt=/var/run/linkerd/ca/crt"
+        volumeMounts:
+        - mountPath: /var/run/linkerd/ca
+          name: l5d-id-signing-key
+
       volumes:
-      - name: l5d-id-scratch
+      # This is generated by `make target/example.com/l5d-id-signing-key.yml`
+      - name: l5d-id-signing-key
+        secret:
+          secretName: l5d-id-signing-key
+
+      # Used to store key material from `l5d-id-sync-init` to `l5d-id-sync`
+      - name: l5d-id-service-key
         emptyDir:
           medium: Memory
-      # - name: l5d-id-token
-      #   projected:
-      #     sources:
-      #     - serviceAccountToken:
-      #         path: token
-      #         expirationSeconds: 600
-      #         audience: l5d-id

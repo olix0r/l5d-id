@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -14,8 +17,7 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
-	"github.com/smallstep/cli/crypto/pemutil"
-	"github.com/smallstep/cli/pkg/x509"
+	"github.com/smallstep/cli/crypto/x509util"
 
 	"google.golang.org/grpc"
 
@@ -30,6 +32,7 @@ func main() {
 	tokenPath := flag.String("token", "", "path to token")
 	csrPath := flag.String("csr", "", "path to read CSR from")
 	crtPath := flag.String("crt", "", "path that certificate is written to (for debugging)")
+	rootPath := flag.String("trust", "", "path to root trust bundle")
 
 	// override glog's default configuration
 	flag.Set("logtostderr", "true")
@@ -67,7 +70,16 @@ func main() {
 		log.Fatal("`-crt` must be specified")
 	}
 
+	if *rootPath == "" {
+		log.Fatal("`-trust` must be specified")
+	}
+
 	csr, err := ioutil.ReadFile(*csrPath)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	roots, err := x509util.ReadCertPool(*rootPath)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
@@ -91,33 +103,81 @@ func main() {
 			log.Fatal("Missing certificate in response")
 		}
 
-		// Assert that the certificate is valid.
-		p, err := pemutil.Parse(crtb, pemutil.WithStepCrypto())
+		crt, intermediates, err := parseCrt(crtb)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		crt := p.(*x509.Certificate)
+
+		_, err = crt.Verify(x509.VerifyOptions{
+			Roots:         roots,
+			Intermediates: intermediates,
+		})
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+
+		if time.Now().After(crt.NotAfter) || time.Now().Before(crt.NotBefore) {
+			log.Fatal("Received expired certificate")
+		}
 
 		if err := ioutil.WriteFile(*crtPath, crtb, 0600); err != nil {
 			log.Fatal(err.Error())
 		}
 
-		expiresIn := crt.NotAfter.Sub(time.Now())
-
 		// Refresh in 80% of the time expiry time, with a max of 1 day
+		expiresIn := crt.NotAfter.Sub(time.Now())
 		refreshIn := (expiresIn / time.Second) * (800 * time.Millisecond)
 		if refreshIn > 24*time.Hour {
 			refreshIn = 24 * time.Hour
 		}
 
 		sum := sha256.Sum256(crt.Raw)
-
 		log.Infof("fp=%s; expiry=%s; refresh=%s", strings.ToLower(hex.EncodeToString(sum[:])), expiresIn, refreshIn)
+
 		select {
 		case <-time.NewTimer(refreshIn).C:
-			continue
+			// continue
 		case <-stop:
 			os.Exit(0)
 		}
 	}
+}
+
+func parseCrt(crtb []byte) (*x509.Certificate, *x509.CertPool, error) {
+	var (
+		block *pem.Block
+		crt   *x509.Certificate
+		ipems []byte
+		err   error
+	)
+
+	intermediates := x509.NewCertPool()
+
+	for len(crtb) > 0 {
+		block, crtb = pem.Decode(crtb)
+		if block == nil {
+			return nil, nil, errors.New("Failed to decode PEM certificate")
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		if crt == nil {
+			crt, err = x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				return nil, nil, err
+			}
+		} else {
+			ipems = append(ipems, pem.EncodeToMemory(block)...)
+		}
+	}
+
+	if crt == nil {
+		return nil, nil, errors.New("Certificate did not contain PEM certificate blocks")
+	}
+
+	if len(ipems) > 0 && !intermediates.AppendCertsFromPEM(ipems) {
+		return nil, nil, errors.New("Failed to create intermediate chain")
+	}
+
+	return crt, intermediates, nil
 }
