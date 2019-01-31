@@ -5,14 +5,30 @@ package io.linkerd.identity;
 option go_package = "github.com/olix0r/l5d-id/gen/identity";
 
 service Identity {
+  // Requests that a time-bounded certificate be signed.
+  //
+  // The requester must provide a token that verifies the client's identity and
+  // a Certificate Signing Request that adheres to the service naming rules.
+  //
+  // Errors are returned when the provided request is invalid or when
+  // authentication cannot be performed.
   rpc Certify(CertifyRequest) returns (CertifyResponse) {}
 }
 
 message CertifyRequest {
+  // Proof of the requester's identity.
+  //
+  // In Kubernetes, for instance, this is the contents of a service account token.
   bytes token = 1;
+
+  // A PEM-encoded x509 Certificate Signing Request.
   bytes certificate_signing_request = 2;
 }
 
 message CertifyResponse {
-  bytes certificate = 1;
+  // A PEM-encoded x509 Certificate.
+  bytes leaf_certificate = 1;
+
+  // A list of PEM-encoded x509 Certificates of intermediate signing certificates.
+  repeated bytes intermediate_certificates = 2;
 }
