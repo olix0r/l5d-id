@@ -1,5 +1,17 @@
 # Transparent Mutual Identity in the Virtual Private Mesh
 
+In distributed, dynamically-scheduled microservice environments, it can be
+very hard to know "who" is on either end of a connection. In order to answer
+this question, we introduce an _Identity system_ that describes workloads
+within the service mesh. This identity system is bound to cryptographic keys,
+so that linkerd proxies can communicate confidentially, with mutually-
+validated identities.
+
+This is an important foundational step towards exposing _authorization
+policies_ that describe how services are able to interact. However, aset of
+header-oriented utilities will be exposed so that applications can begin to
+implement auditing and authorization based on linkerd-specific headers.
+
 ## Goals
 
 1. Automatically establish private sessions between
@@ -7,21 +19,83 @@
 2. Bootstrap trust & identity from Kubernetes primitives.
 3. Wherever possible, prevent private key material from touching disk.
 4. Expose opt-in identity information and controls to applications via HTTP headers.
+5. The Linkerd controller should not need role bindings to access secrets in
+   application namespaces.
+
+### Non-goals
+
+* Participate in TLS with arbitrary clients/servers.
+* Provide identity for non-HTTP traffic.
+* Provide generalized CA infrastructure.
 
 ## Overview
 
-In broad strokes, Linkerd will change in the following ways:
+* The `--tls` flag---and all associated logic, including the `linkerd-ca`
+  controller---is completely removed from control plane installation and proxy inject.
+* A new controller service, `linkerd-identity`, is introduced into the default
+  linkerd installation. This service exposes a gRPC certification API.
+  Proxies use this API to obtain a validated TLS certificate from an API
+  token and Certificate Signing Request.
+* The proxy container generates ephemeral private keys, stored in memory within
+  the pod. This enables multiple pods to share a logical identity without
+  sharing key material, limiting the impact of an exfiltrated key.
 
-1. `--tls=optional` is removed. Identity is provided by default and may be disabled by
-   `--disable-control-plane-identity` and inject-time configurations to
-   opt-out of identity for applications. By default, linkerd proxies will
-   require validated TLS identity for HTTP communication between
-   linkerd-enable pods, though it may be explicitly disabled for a pod via
-   annotation.
-2. Identity is tied to each pod's Kubernetes Service Account.
-3. The linkerd-proxy container is responsible for generating its own
-   private key and obtaining (and refreshing) certificates from the (new)
-   linkerd-identity control plane service to be used for TLS termination.
+### Installation
+
+#### Configuration
+
+A `linkerd-identity` service account must exist in the control plane namespace.
+
+When the linkerd control plane is installed for the first time, the identity
+service must be configured with some critical information:
+
+* _Trust anchors_ -- A set of PEM-encoded root certificates that are used to
+  validate identity certificates.
+* A _Signing Key_ -- A DER-encoded private key to used to issue identity
+  certificates. This key must not be password-protected.
+* A _Signing Certificate_ -- An intermediate certificate that can be validated
+  against the trust anchors.
+
+A `linkerd-trust-anchor` ConfigMap is created in the controller namespace
+containing the trust anchors file. This ConfigMap must be readable by the
+Injector controller and by the user who deploys control plane pods.
+
+A `linkerd-identity-signing` Secret is created in the controller namespace
+containing the key and certificate. This Secret must ONLY be readable by the
+linkerd-identity service account (i.e. and not the entire control plane
+namespace). If the user does not have existing trust/signing infrastructure,
+we should generate them during installation.
+
+Additionally, the user may configure the following.
+
+* A _trust domain_. In many configurations, this correspond to the cluster's
+  configured DNS suffix (.e.g. `cluster.local`), though this is not a hard
+  requirement and this trust domain need not be part of a real DNS domain.
+  All identities issued in this mesh must be a subdomain of this trust
+  domain.
+* An _identity certificate lifetime_, indicating the amount of time for which
+  the Identity services certifies identities. Initially, the default value
+  should be 1 day.
+
+
+#### Deployment
+
+When deploying the control plane (pods), a new `linkerd-identity` deployment
+is added, using the `linkerd-identity` service account. Control plane
+injection works the same as proxy injection (described below), with one
+important exception: Proxies in `linkerd-identity` pods are configured
+slightly differently: instead of communicating through the mesh to reach the
+`linkerd-identity` service, the proxy simply accesses the service over
+`localhost`. This is necessary so that the service can bootstrap its own
+identity.
+
+The `linkerd-proxy-api` should be renamed to the `linkerd-destination`
+service, since the proxy-api services are now (rightly) split across
+networked services with separate privileges.
+
+### Proxy Injection
+
+### Destination Service
 
 ## Service Accounts & Identity
 
