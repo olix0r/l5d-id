@@ -5,7 +5,11 @@ if [ $# -ne 1 ]; then
     exit 64
 fi
 
-crt=$(base64 -w 0 <$1)
+if [ "$(uname -s)" = "Darwin" ]; then
+    crt=$(base64 <"$1")
+else
+    crt=$(base64 -w 0 <"$1")
+fi
 
 cat - <<EOF
 ---

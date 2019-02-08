@@ -89,13 +89,46 @@ slightly differently: instead of communicating through the mesh to reach the
 `localhost`. This is necessary so that the service can bootstrap its own
 identity.
 
-The `linkerd-proxy-api` should be renamed to the `linkerd-destination`
-service, since the proxy-api services are now (rightly) split across
-networked services with separate privileges.
+The `linkerd-proxy-api` deployment/service/etc should be renamed to the
+`linkerd-destination` service, since the proxy-api suite of services is now
+(rightly) split across networked services with separate privileges.
 
 ### Proxy Injection
 
+Proxy injection will need to be modified to access the control plane's trust
+anchor. The proxy-injector pod likely just mounts the anchors file.
+
+Additionally, a Volume must be added to Linkerd-injected pods:
+
+```yaml
+volumes:
+- name: linkerd-identity-store
+  emptyDir:
+    medium: Memory
+```
+
+This volume must be mounted into (only) the proxy container (under
+`/var/run/linkerd/identity`)
+
+The `LINKERD2_PROXY_POD_NAMESPACE` and `LINKERD2_PROXY_TLS_*` environment
+variables are no longer set. Instead, injection sets the following environment variables:
+
+- `LINKERD2_PROXY_IDENTITY_TRUST_ANCHORS` -- a base64-encoded blob containing
+  the control plane's trust anchors. This is inlined into the proxy configuration so that the
+- `LINKERD2_PROXY_IDENTITY_STORE_PATH` -- the path under which the
+  `linkerd-identity-store` volume is mounted.
+- `LINKERD2_PROXY_IDENTITY_TOKEN_PATH` -- the path under which the
+  authentication token may be read. For now, this will always be
+  `/var/run/secrets/kubernetes.io/serviceaccount`; though, later, when it's
+  possible to request narrower tokens (i.e. via the' `TokenRequestProjection`
+  feature), we may specify other locations.
+- `LINKERD2_PROXY_IDENTITY_DOMAIN` -- a domain suffix under which the pod's
+   identity will be namespaced. A typical value would be
+   `sa.linkerd.linkerd-identity.cluster.local` (when the control namespace
+   is _linkerd_ and the trust domain is _cluster.local_).
+
 ### Destination Service
+
 
 ### Service Accounts & Identity
 
@@ -108,7 +141,7 @@ give you, for now at least.
 
 Linkerd identities are encoded as DNS-like names:
 
-    UID . SERVICEACCOUNT . NAMESPACE . CONTROLLER_NS .sa.linkerd-identity. TRUST_DOMAIN...
+    UID . SERVICEACCOUNT . NAMESPACE .sa. CONTROLLER_NS .linkerd-identity. TRUST_DOMAIN...
 
 For example:
 
@@ -166,10 +199,32 @@ TLS is not explicitly disabled for the pod, it also does the following:
 2. Configure the proxy container with a tmpfs volume to the pod, to be used
    by the proxy to store key material in memory, though accessible for
    diagnostics during the pod's lifetime.
-3. Configure the proxy with the hostname and identity of the linkerd
+3. Configure the proxy with the hostname and id of the linkerd
    proxy-api service.
-4. Configure the proxy with the hostname of the linkerd identity service.
+4. Configure the proxy with the hostname and id of the linkerd identity service.
    The identity service's identity is discovered via the discovery service.
+
+### Startup
+
+As the proxy container starts, instead of invoking the proxy directly, an
+initialization script is run. This script runs a program that reads a service
+account token, generates a private key and CSR corresponding to the identity
+stored in the token, writing the results to tmpfs, and finally outputting the
+linkerd identity name, which the init script uses to configure the proxy as
+it execs it.
+
+As the proxy starts, it initiates a secure connection to the proxy-api,
+validating the proxy-api's identity with the configured trust root and id.
+Additionally, the proxy establishes a secure connection to the identity
+service, validated with the root and configured id. A timer task in the proxy obtains new
+
+The proxy immediately begins serving inbound traffic, but does not terminate
+TLS until a certificate has been acquired.
+
+The proxy also immediately begins serving outbound traffic, using the
+proxy-api to determine when TLS should be used with a peer and how the peer's
+id should be validated. When the outbound proxy does not communicate with the
+destination service to resolve a name (i.e. falling back to DNS)
 
 ### When a Pod is compromised
 
