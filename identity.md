@@ -8,7 +8,7 @@ so that linkerd proxies can communicate confidentially, with mutually-
 validated identities.
 
 This is an important foundational step towards exposing _authorization
-policies_ that describe how services are able to interact. However, aset of
+policies_ that describe how services are able to interact. However, a set of
 header-oriented utilities will be exposed so that applications can begin to
 implement auditing and authorization based on linkerd-specific headers.
 
@@ -40,9 +40,9 @@ implement auditing and authorization based on linkerd-specific headers.
   the pod. This enables multiple pods to share a logical identity without
   sharing key material, limiting the impact of an exfiltrated key.
 
-### Installation
+## Installation
 
-#### Configuration
+### Configuration
 
 A `linkerd-identity` service account must exist in the control plane namespace.
 
@@ -78,7 +78,7 @@ Additionally, the user may configure the following.
   should be 1 day.
 
 
-#### Deployment
+### Deployment
 
 When deploying the control plane (pods), a new `linkerd-identity` deployment
 is added, using the `linkerd-identity` service account. Control plane
@@ -93,12 +93,62 @@ The `linkerd-proxy-api` deployment/service/etc should be renamed to the
 `linkerd-destination` service, since the proxy-api suite of services is now
 (rightly) split across networked services with separate privileges.
 
+## Controllers
+
+The destination, identity, and proxy injector controllers must share logic
+for mapping between service accounts and identities:
+
+- the proxy injector configures the proxy with its identity
+- the destination service determines the identity for each pod
+- the identity service validates kubernetes UserInfo against a CSR containing
+  the injector-determined identity.
+
 ### Proxy Injection
 
-Proxy injection will need to be modified to access the control plane's trust
-anchor. The proxy-injector pod likely just mounts the anchors file.
+When a proxy is being injected into a resource, we inspect resources for an
+annotation, `linkerd.io/identity`, which may (currently) have one of two
+values: _enabled_ or _disabled_. When no value is set, the cluster's default
+configuration is used. When the value is set to _disabled_, all of the
+following identity configuration is skipped. When the value is set to
+_enabled_ and the control plane does not support identity, then injection
+fails.
 
-Additionally, a Volume must be added to Linkerd-injected pods:
+The `linkerd.io/identity` annotation may only be enabled on pod resources and
+not on, for instances, Service resources. Injection should fail when a
+non-pod-resource has identity enabled.
+
+In any case, as the proxy is injected, the `linkerd.io/identity` annotation
+is set to _enabled_ when the proxy is configured to participate with identity
+and _disabled_ if identity is disabled.
+
+When identity is not disabled, the following configuration is applied:
+
+The `LINKERD2_PROXY_POD_NAMESPACE` and `LINKERD2_PROXY_TLS_*` environment
+variables are no longer set. Instead, injection sets the following environment variables:
+
+- `LINKERD2_PROXY_IDENTITY_TRUST_ANCHORS_BLOB` -- a base64-encoded blob containing
+  the control plane's trust anchors. This is inlined into the proxy configuration so that the
+- `LINKERD2_PROXY_IDENTITY_STORE_DIR` -- the path under which the ephemeral
+   identity store volume is mounted. See below.
+- `LINKERD2_PROXY_IDENTITY_TOKEN_FILE` -- the path under which the
+  (service account) authentication token may be read. For now, this will
+  always be `/var/run/secrets/kubernetes.io/serviceaccount`; though, later,
+  when it's possible to request narrower tokens (i.e. via the'
+  `TokenRequestProjection` feature), we may specify other locations.
+- `LINKERD2_PROXY_LOCAL_IDENTITY` -- A DNS-like name that identifies the
+  workload within the mesh.
+- `LINKERD2_PROXY_DESTINATION_ADDR` -- e.g.
+  `linkerd-destination.linkerd.svc.cluster.local`
+- `LINKERD2_PROXY_DESTINATION_IDENTITY` -- e.g.
+  `linkerd-controller.linkerd.sa.linkerd-identity.linkerd.cluster.local`
+- `LINKERD2_PROXY_IDENTITY_ADDR` -- e.g.
+  `linkerd-identity.linkerd.svc.cluster.local`
+- `LINKERD2_PROXY_IDENTITY_IDENTITY` -- e.g.
+  `linkerd-identity.linkerd.sa.linkerd-identity.linkerd.cluster.local`
+
+#### Identity Store Volume
+
+A Volume must be added to Linkerd-injected pods:
 
 ```yaml
 volumes:
@@ -108,123 +158,138 @@ volumes:
 ```
 
 This volume must be mounted into (only) the proxy container (under
-`/var/run/linkerd/identity`)
-
-The `LINKERD2_PROXY_POD_NAMESPACE` and `LINKERD2_PROXY_TLS_*` environment
-variables are no longer set. Instead, injection sets the following environment variables:
-
-- `LINKERD2_PROXY_IDENTITY_TRUST_ANCHORS` -- a base64-encoded blob containing
-  the control plane's trust anchors. This is inlined into the proxy configuration so that the
-- `LINKERD2_PROXY_IDENTITY_STORE_PATH` -- the path under which the
-  `linkerd-identity-store` volume is mounted.
-- `LINKERD2_PROXY_IDENTITY_TOKEN_PATH` -- the path under which the
-  authentication token may be read. For now, this will always be
-  `/var/run/secrets/kubernetes.io/serviceaccount`; though, later, when it's
-  possible to request narrower tokens (i.e. via the' `TokenRequestProjection`
-  feature), we may specify other locations.
-- `LINKERD2_PROXY_IDENTITY_DOMAIN` -- a domain suffix under which the pod's
-   identity will be namespaced. A typical value would be
-   `sa.linkerd.linkerd-identity.cluster.local` (when the control namespace
-   is _linkerd_ and the trust domain is _cluster.local_).
+`/var/run/linkerd/identity`).
 
 ### Destination Service
 
+The proxy will stop making local decisions about whether to establish TLS
+with a remote peer, instead relying on the destination service to make this
+decision. The destination service
 
-### Service Accounts & Identity
+*Note*: The proxy-api's destination service should drop it's k8s-specific
+*references to, instead, simply passing back the identity name (perhaps
+*`strategy: Mesh`).
 
-Previously, linkerd's `tls=optional` mode associated pod identity with,
-effectively, a Kubernetes Deployment by publishing Secrets
-(containing key material) that would be mounted into the appropriate pod.
-However, any pod in deployment _mal_ can access deployment _bob_'s keys if
-they share a service account. Service accounts are as good as Kubernetes can
-give you, for now at least.
+### Identity Service
 
-Linkerd identities are encoded as DNS-like names:
-
-    UID . SERVICEACCOUNT . NAMESPACE .sa. CONTROLLER_NS .linkerd-identity. TRUST_DOMAIN...
-
-For example:
-
-    2c345c34-241f-11e9-bd44-80fa5b5b38db.testsa.default.linkerd.linkerd-identity.cluster.local
-
-These names are intended to unambiguously identify a service account within a
-linkerd controller's trust domain, and are not intended to be user-facing
-(except for the purposes of validation and debugging). They should fit into
-CA schemes, i.e. such that a signing authority (like the Identity service)
-
-#### The Linkerd Identity Service
-
-This change introduces a new gRPC service into linkerd2-proxy-api (though it
+This change introduces a new gRPC service into linkerd2's proxy-api, though it
 will *not* be served via the proxy-api Service, so that the Identity
-service's privileges may be constrained appropriately).
+service's privileges may be constrained appropriately.
 
 The Identity service holds a signing key and certificate. As it receives
 requests from proxies, it forwards the `token` onto the Kubernetes
 `TokenReview` API to validate the service account. If the service account is
-valid and the `certificate_signing_request` includes a `CommonName` with the
-correct linkerd identity (as described above), it uses its signing key to
+valid and the `certificate_signing_request` includes (only) a `DNSName` with
+the correct linkerd identity (as described above), it uses its signing key to
 produce a short-lived certificate to the proxy.
 
 The proxy can then use this certificate to prove its identity for both client
 and server communications until the certificate expires.
 
-At 80% of the certificate's lifetime (or, at least once per day), the proxy
-renews its certificate from the identity service. It preemptively
-
-##### Known Issue: Token Reuse
-
-In the current proposal, each pod sends its service account to the Identity
-service as proof of identity. A malicious Identity service could use this as
-way to harvest service account tokens.
-
-The proxy must validate the identity service's identity (when not
-communicating over localhost) to ensure that it's sending the token to a
-trusted endpoint.
-
-Later, when the `BoundServiceAccountTokenVolume` feature is enabled in
-Kubernetes, we should be able to obtain rotating tokens with a narrower
-audience to further limit this exposure.
-
-
-## The life of a Pod
-
-### Inject
-
-When a pod is injected (i.e. by Linkerd's inject controller), the injector
-modifies the pod spec, as it did before, to add the container to pods. When
-TLS is not explicitly disabled for the pod, it also does the following:
-
-1. Add the controller's trust roots to the proxy pod and configure the
-   proxy's environment appropriately.
-2. Configure the proxy container with a tmpfs volume to the pod, to be used
-   by the proxy to store key material in memory, though accessible for
-   diagnostics during the pod's lifetime.
-3. Configure the proxy with the hostname and id of the linkerd
-   proxy-api service.
-4. Configure the proxy with the hostname and id of the linkerd identity service.
-   The identity service's identity is discovered via the discovery service.
-
-### Startup
+## Proxy
 
 As the proxy container starts, instead of invoking the proxy directly, an
-initialization script is run. This script runs a program that reads a service
-account token, generates a private key and CSR corresponding to the identity
-stored in the token, writing the results to tmpfs, and finally outputting the
-linkerd identity name, which the init script uses to configure the proxy as
-it execs it.
+initialization script is run to, if identity is configured, generate a key so
+that a certificate can be provisioned from the identity service.
 
-As the proxy starts, it initiates a secure connection to the proxy-api,
-validating the proxy-api's identity with the configured trust root and id.
-Additionally, the proxy establishes a secure connection to the identity
-service, validated with the root and configured id. A timer task in the proxy obtains new
+If the `LINKERD2_PROXY_LOCAL_IDENTITY_NAME` is set, the
+`LINKERD2_PROXY_IDENTITY_TRUST_ANCHORS_BLOB` must be set to valid PEM-encoded set of
+certificates, `LINKERD2_PROXY_IDENTITY_TOKEN_FILE` must be set to a readable
+file, and `LINKERD2_PROXY_IDENTITY_STORE_DIR` must be set to a writeable
+directory. Otherwise, the script should fail to start the proxy before keys
+are generated.
 
-The proxy immediately begins serving inbound traffic, but does not terminate
-TLS until a certificate has been acquired.
+### Key Generation
 
-The proxy also immediately begins serving outbound traffic, using the
-proxy-api to determine when TLS should be used with a peer and how the peer's
-id should be validated. When the outbound proxy does not communicate with the
-destination service to resolve a name (i.e. falling back to DNS)
+If `LINKERD2_PROXY_LOCAL_IDENTITY_NAME` is set, a DER-encoded ECDSA private key is
+generated into a file in `${LINKERD2_PROXY_IDENTITY_STORE_DIR}/key.der` with
+the permissions 0400---this key will not change throughout the life of the
+process.
+
+A DER-encoded Certificate Signing Request (CSR) containing only one DNSName
+SAN, which is set from `LINKERD2_PROXY_LOCAL_IDENTITY_NAME`, is generated and stored in
+`$[LINKERD2_PROXY_IDENTITY_STORE_DIR}/csr.p8` with permissions 0400---this,
+too, will not change throughout the life of the process.
+
+Furthermore, the `LINKERD_PROXY_TRUST_ANCHORS_BLOB` value is base64-decoded,
+parsed to validate that it contains valid PEM-encoded certificates, and
+stored to `$[LINKERD2_PROXY_IDENTITY_STORE_DIR}/trust-anchors.pem`, again at
+0400 to indicate that this file is not updated at runtime.
+
+The `LINKERD2_PROXY_IDENTITY_KEY_FILE`, `LINKERD2_PROXY_IDENTITY_CSR_FILE`,
+and `LINKERD2_PROXY_IDENTITY_TRUST_ANCHORS_FILE` environment variables are
+set to each of these generated files so that the proxy can discover them as it starts.
+
+### Certification
+
+As the proxy starts, it reads `LINKERD2_PROXY_LOCAL_IDENTITY_NAME`, loads the
+private key in `LINKERD2_PROXY_IDENTITY_KEY_FILE`, the CSR in
+`LINKERD2_PROXY_IDENTITY_CSR_FILE`, and the trust anchors from
+`LINKERD2_PROXY_IDENTITY_TRUST_ANCHORS_FILE`.
+
+The proxy immediately begins serving inbound traffic. When a connection is
+accepted and TLS is detected, it is checked for an SNI value matching
+`LINKERD2_PROXY_LOCAL_IDENTITY_NAME`. Until the proxy has acquired a
+certificate for this identity, these connections are refused (and not
+forwarded or otherwise decoded).
+
+The proxy creates a client to the destination service at
+`LINKERD2_PROXY_DESTINATION_ADDR`. If the addr refers to a loopback address,
+then the `LINKERD2_PROXY_DESTINATION_IDENTITY` variable must not be set; and,
+otherwise, if the addr is not a loopback address and the proxy is configured
+with identity trust anchors, then the identity _must_ be set so that the
+client can establish a private connection to the destination service using
+the trust anchors (even though the proxy may not yet have an
+identity certificate).
+
+The proxy immediately begins routing outbound traffic using the
+destination service client (or DNS) for discovery. When the destination
+service provides an identity for endpoints (as described above), then the
+proxy uses its trust anchor to establish private connections to these
+endpoints. When the proxy has a valid certificate of its own, then
+it does provides client authentication; otherwise, client authentication may
+be omitted on outbound connections.
+
+Finally (though, in practice, concurrently), it creates a client to
+`LINKERD2_PROXY_IDENTITY_ADDR`. If the addr refers to a loopback address,
+then the `LINKERD2_PROXY_IDENTITY_IDENTITY` variable must not be set; and,
+otherwise, if the addr is not a loopback address, then the identity _must_ be
+set so that the client can establish a private connection to the identity
+service using the trust anchors (even though the proxy doesn't yet have an
+identity certificate).
+
+The proxy immediately issues a `Certify` request to the identity service,
+loading the contents of `LINKERD2_PROXY_IDENTITY_TOKEN_FILE` (so that the
+value may update on each request), and including the contents of
+`LINKERD2_PROXY_IDENTITY_CSR_FILE` (which need only be loaded once at
+startup).
+
+The proxy's admin endpoint exposes a readiness check endpoint that, when
+identity is configured, fails until the proxy has provisioned a certificate.
+
+#### When the proxy can't obtain a new certificate from the identity service
+
+If the Identity service is failing, or if the proxy's container loses access
+to its service account token, or if the service account is deleted from the
+kubernetes API server so that the account token is no longer valid, or if
+there is another failure that prevents the proxy from refreshing its
+certificates from the identity service, then the proxy's certificate may
+expire.
+
+When the proxy's certificate expires, the proxy refuses new inbound TLS'd
+connections and it stops providing client authentication on outbound TLS'd
+connections.
+
+The proxy's admin endpoint should expose a liveness check endpoint that
+fails when the proxy is configured with an identity but its certificate has
+expired.
+
+## Appendix
+
+### Questions
+
+1. What should the proxy do with previously established connections when a certificate rotates?
+2. To UID or not?
 
 ### When a Pod is compromised
 
@@ -247,15 +312,33 @@ string in each certificate, e.g.:
     2c345c34-241f-11e9-bd44-80fa5b5b38db.testsa.default.linkerd.linkerd-identity.cluster.local
     44fbcb79-241f-11e9-bd44-80fa5b5b38db.testsa.default.linkerd.linkerd-identity.cluster.local
 
+#### Token Reuse
 
-### Questions
+In the current proposal, each pod sends its service account to the Identity
+service as proof of identity. A malicious Identity service could use this as
+way to harvest service account tokens.
 
-1. What should the proxy do with previously established connections when a certificate rotates?
-2. How should the trust roots be injected to proxies?
-  * config maps proliferated to each namespace/service-account?
-    * if names are random, garbage collection problem
-    * if names are stable, updates at random deploy-time? (maybe ok)?
-  * base64-encoded env variable decoded by the init process?
+The proxy must validate the identity service's identity (when not
+communicating over localhost) to ensure that it's sending the token to a
+trusted endpoint.
 
-## Installing a Linkerd control plane
+Later, when the `BoundServiceAccountTokenVolume` feature is enabled in
+Kubernetes, we should be able to obtain rotating tokens with a narrower
+audience to further limit this exposure.
 
+
+### Determining the proxy's identity with the Kubernetes downward API
+
+```yaml
+env:
+  - name: L5D_NS
+    value: linkerd
+  - name: TRUST_DOMAIN
+    value: cluster.local
+  - name: K8S_SA
+    valueFrom: {fieldRef: {fieldPath: spec.serviceAccountName}}
+  - name: K8S_NS
+    valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+  - name: LINKERD2_PROXY_LOCAL_IDENTITY_NAME
+    value: $(K8S_SA).$(K8S_NS).sa.linkerd-identity.$(L5D_NS).$(TRUST_DOMAIN)
+```
