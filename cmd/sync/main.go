@@ -8,7 +8,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"flag"
-	"fmt"
 	"io/ioutil"
 	"os"
 	"os/signal"
@@ -87,7 +86,7 @@ func main() {
 	for {
 		token, err := ioutil.ReadFile(*tokenPath)
 		if err != nil {
-			log.Fatal(fmt.Errorf("failed to read token: %s: %s", *tokenPath, err.Error()))
+			log.Fatalf("failed to read token: %s: %s", *tokenPath, err.Error())
 		}
 
 		rsp, err := client.Certify(ctx, &pb.CertifyRequest{
@@ -95,7 +94,7 @@ func main() {
 			CertificateSigningRequest: csr,
 		})
 		if err != nil {
-			log.Fatal(fmt.Errorf("Failed to obtain certificate: %s", err.Error()))
+			log.Fatalf("Failed to obtain certificate: %s", err.Error())
 		}
 
 		crtb := rsp.GetCertificate()

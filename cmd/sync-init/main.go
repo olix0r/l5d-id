@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/ecdsa"
 	"crypto/rand"
-	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -27,6 +26,7 @@ func main() {
 	tokenPath := flag.String("token", "/var/run/secrets/kuberentes.io/serviceaccount/token", "path to read token from")
 	keyPath := flag.String("key", "", "path that the key is written to")
 	csrPath := flag.String("csr", "", "path that the csr is written to")
+	expectedName := flag.String("name", "", "DNS-like identity name")
 
 	// override glog's default configuration
 	flag.Set("logtostderr", "true")
@@ -74,16 +74,17 @@ func main() {
 	}
 
 	name := fmt.Sprintf("%s.%s.%s", uid, sa, ns)
+	if *expectedName != name {
+		log.Fatalf("Names do not match: expected=%s; read=%s", *expectedName, name)
+	}
 
 	key, err := newKey()
 	if err != nil {
 		log.Fatal(err.Error())
 	}
 
-	csrReq := &x509.CertificateRequest{
-		Subject: pkix.Name{CommonName: name},
-	}
-	csr, err := newCSR(key, csrReq)
+	names := []string{name}
+	csr, err := newCSR(key, &x509.CertificateRequest{DNSNames: names})
 	if err != nil {
 		log.Fatal(err.Error())
 	}
