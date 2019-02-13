@@ -284,19 +284,40 @@ The proxy's admin endpoint should expose a liveness check endpoint that
 fails when the proxy is configured with an identity but its certificate has
 expired.
 
+### Application integration
+
+The proxy supports several linkerd-specific headers to allow applications to
+interact with the identity-system:
+
+* `l5d-client-id` -- set on _requests on the inbound proxy_ iff the remote peer is
+  meshed and has provided valid client authentication. The value corresponds
+  to the identity of the remote peer.
+* `l5d-server-id`
+  * set on _requests on the inbound proxy_ iff the server terminated TLS with
+    the server's identities. This useful to indicating that TLS was used when
+    client authentication was not possible (i.e. because the client does not
+    have an identity).
+  * set on _responses on the outbound proxy_ iff the server is meshed and has
+    provided a valid server identity.
+
+Additionally, clients may issue requests with a `l5d-require-server-id`
+header. This causes the proxy to only issue the request to the peer if its
+identity matches the header value. When the peer's identity does not match
+the required value, then a `412 Precondition Failed` response should be
+issued from the proxy.
+
 ## Appendix
 
 ### Questions
 
 1. What should the proxy do with previously established connections when a certificate rotates?
-2. To UID or not?
 
 ### When a Pod is compromised
 
 In the case that a pod becomes compromised, we aim to limit the potential
 exposure by (1) using unique, ephemeral keys in each proxy pod, and (2)
 rotating certificates from the identity service frequently. However,
-especially due to the service account token issue described above, the best
+especially due to the service account token issue described below, the best
 course of action is delete the Service Account and its resources.
 
 This prevents the attacker from using the account's token to provision
@@ -304,15 +325,7 @@ additional certificates from the Identity service. This, coupled with short
 certificate lifetimes, avoids the needs for complicated certificate
 revocation schemes.
 
-However, at this point, a new account may be created with the same name and
-applications would be unable to distinguish the identity of the two accounts.
-We compensate for this by including Kubernetes' unique UID in the identity
-string in each certificate, e.g.:
-
-    2c345c34-241f-11e9-bd44-80fa5b5b38db.testsa.default.linkerd.linkerd-identity.cluster.local
-    44fbcb79-241f-11e9-bd44-80fa5b5b38db.testsa.default.linkerd.linkerd-identity.cluster.local
-
-#### Token Reuse
+### Token Reuse
 
 In the current proposal, each pod sends its service account to the Identity
 service as proof of identity. A malicious Identity service could use this as
@@ -325,7 +338,6 @@ trusted endpoint.
 Later, when the `BoundServiceAccountTokenVolume` feature is enabled in
 Kubernetes, we should be able to obtain rotating tokens with a narrower
 audience to further limit this exposure.
-
 
 ### Determining the proxy's identity with the Kubernetes downward API
 

@@ -2,7 +2,7 @@ KUBECTL = kubectl
 STEP = step
 
 TARGET = target
-TRUST_DOMAIN ?= example.com
+TRUST_DOMAIN ?= cluster.local
 
 CA_CRT = $(TARGET)/$(TRUST_DOMAIN)/ca.crt
 CA_KEY = $(TARGET)/$(TRUST_DOMAIN)/ca.key
@@ -16,7 +16,7 @@ K8S_YML = $(TARGET)/$(TRUST_DOMAIN)/k8s.yml
 .PHONY: $(TRUST_DOMAIN)
 $(TRUST_DOMAIN): $(TARGET)/$(TRUST_DOMAIN)
 
-$(TARGET)/$(TRUST_DOMAIN): $(SIGNING_YML)
+$(TARGET)/$(TRUST_DOMAIN): $(K8S_YML)
 
 .PHONY: clean
 clean: clean-ca
